@@ -114,7 +114,7 @@ function render(s) {
 
 function updatePrintButton() {
   $('print').disabled = !($('file').files.length && phase === 'connected' && printer && printer.photosLeft > 0);
-  $('print').textContent = $('dry').checked ? 'Dry run' : 'Print';
+  if (!confirmTimer) $('print').textContent = $('dry').checked ? 'Dry run' : 'Print';
 }
 
 function formData() {
@@ -170,10 +170,18 @@ $('file').onchange = () => { updatePreview(); updatePrintButton(); };
 $('fit').onchange = () => { $('bgLabel').hidden = $('fit').value !== 'pad'; updatePreview(); };
 $('background').onchange = updatePreview;
 $('rotate').onclick = () => { rotation = (rotation + 90) % 360; updatePreview(); };
-$('dry').onchange = updatePrintButton;
+$('dry').onchange = resetPrintConfirm;
+let confirmTimer = null;
+function resetPrintConfirm() { clearTimeout(confirmTimer); confirmTimer = null; updatePrintButton(); }
 $('print').onclick = async () => {
   const dry = $('dry').checked;
-  if (!dry && !confirm('Print this image? This uses one frame of film.')) return;
+  // confirm with a second click rather than confirm(), which some embedded browsers block
+  if (!dry && !confirmTimer) {
+    $('print').textContent = 'Click again to print (uses 1 film)';
+    confirmTimer = setTimeout(resetPrintConfirm, 5000);
+    return;
+  }
+  resetPrintConfirm();
   const data = formData();
   data.append('dry_run', dry);
   try { await api('/api/print', { method: 'POST', body: data }); showError(); } catch (e) { showError(e); }
