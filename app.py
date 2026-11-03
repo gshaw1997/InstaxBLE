@@ -33,26 +33,35 @@ executor = ThreadPoolExecutor(max_workers=1)
 lock = threading.Lock()
 state = {'phase': 'disconnected', 'message': ''}
 CONFIG_PATH = Path(os.environ.get('LOCALAPPDATA', Path.home())) / 'InstaxBLE' / 'config.json'
-options = {'dummy': False, 'auto_connect': False}
+options = {'dummy': False, 'auto_connect': True}
 RETRY_SECONDS = 10
 instax = None
 
 
-def load_saved():
-    """ The remembered printer as {'address': ..., 'name': ...}, or None """
+def read_config():
+    """ {'device': {'address', 'name'} or None, 'auto': bool}; also reads the older flat format """
     try:
         data = json.loads(CONFIG_PATH.read_text(encoding='utf-8'))
-        return data if data.get('address') else None
     except (OSError, ValueError):
-        return None
+        data = {}
+    if data.get('address'):  # older versions stored the device directly
+        data = {'device': {'address': data['address'], 'name': data.get('name', '')}}
+    return {'device': data.get('device') or None, 'auto': bool(data.get('auto', True))}
+
+
+def write_config(**changes):
+    config = {**read_config(), **changes}
+    CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
+    CONFIG_PATH.write_text(json.dumps(config), encoding='utf-8')
+
+
+def load_saved():
+    """ The remembered printer as {'address': ..., 'name': ...}, or None """
+    return read_config()['device']
 
 
 def save_saved(device):
-    if device is None:
-        CONFIG_PATH.unlink(missing_ok=True)
-        return
-    CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
-    CONFIG_PATH.write_text(json.dumps(device), encoding='utf-8')
+    write_config(device=device)
 
 
 def set_state(phase, message=''):
@@ -116,6 +125,7 @@ def status_payload():
         payload = dict(state)
     payload['dummy'] = options['dummy']
     payload['saved'] = load_saved()
+    payload['autoConnect'] = options['auto_connect']
     payload['printer'] = None
     if instax and payload['phase'] in ('connected', 'printing') and instax.printerSettings:
         payload['printer'] = {
@@ -265,11 +275,20 @@ def api_forget():
     return jsonify(status_payload())
 
 
+@app.post('/api/auto-connect')
+def api_auto_connect():
+    enabled = bool((request.get_json(silent=True) or {}).get('enabled'))
+    options['auto_connect'] = enabled
+    options['auto_connect_paused'] = False
+    write_config(auto=enabled)
+    return jsonify(status_payload())
+
+
 def auto_connect_loop():
     """ Keep trying to connect whenever we're disconnected (e.g. printer switched on later) """
     while True:
         sleep(RETRY_SECONDS)
-        if options.get('auto_connect_paused') or not (load_saved() or options['dummy']):
+        if not options['auto_connect'] or options.get('auto_connect_paused') or not (load_saved() or options['dummy']):
             continue  # only auto-connect to a remembered printer, never to whichever one is nearby
         status_payload()  # notices a lost link and flips the phase to disconnected
         with lock:
@@ -280,11 +299,11 @@ def auto_connect_loop():
 
 
 def configure(dummy=False, auto_connect=True):
-    """ Set up dummy mode and auto-connect (used by main() and by the tray launcher) """
+    """ Set up dummy mode and auto-connect (used by main() and by the tray launcher).
+        auto_connect=False turns auto-connect off for this run; the UI toggle can turn it back on. """
     options['dummy'] = dummy
-    if auto_connect:
-        options['auto_connect'] = True
-        threading.Thread(target=auto_connect_loop, daemon=True).start()
+    options['auto_connect'] = auto_connect and read_config()['auto']
+    threading.Thread(target=auto_connect_loop, daemon=True).start()
     if dummy:
         # InstaxBLE looks for a Bluetooth adapter even in dummy mode
         import simplepyble
