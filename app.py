@@ -22,6 +22,7 @@ from Types import PrinterSettings
 
 MAX_UPLOAD_MB = 25
 SEND_TIMEOUT_SECONDS = 120
+PRINT_ATTEMPTS = 5
 DEFAULT_MODEL = PrinterSettings['mini']
 
 app = Flask(__name__, static_folder=None)
@@ -178,25 +179,48 @@ def do_refresh():
     sleep(1)
 
 
+def send_image(image, enabled):
+    """ Send one image. Raises ConnectionError if the link drops before everything is sent. """
+    image.seek(0)
+    if enabled:
+        instax.enable_printing()
+    instax.print_image(image)
+    waited = 0
+    while instax.packetsForPrinting and not options['dummy']:  # a dummy printer never drains the queue
+        if not link_is_up():
+            instax.packetsForPrinting = []
+            raise ConnectionError('lost connection to the printer while sending')
+        if waited >= SEND_TIMEOUT_SECONDS:
+            instax.packetsForPrinting = []
+            raise TimeoutError('printer stopped responding while sending')
+        sleep(0.2)
+        waited += 0.2
+
+
 def do_print(image, enabled):
-    set_state('printing', 'Sending image...')
+    """ The printer drops its Bluetooth link every ~30s and a send takes longer, so when that
+        happens reconnect and start the send over. The print command itself goes last, so an
+        interrupted send never uses film. """
     try:
-        if enabled:
-            instax.enable_printing()
-        instax.print_image(image)
-        waited = 0
-        while instax.packetsForPrinting and not options['dummy']:  # a dummy printer never drains the queue
-            if waited >= SEND_TIMEOUT_SECONDS:
-                instax.packetsForPrinting = []
-                raise TimeoutError('printer stopped responding while sending')
-            sleep(0.2)
-            waited += 0.2
+        for attempt in range(1, PRINT_ATTEMPTS + 1):
+            set_state('printing', 'Sending image...' if attempt == 1 else f'Sending image (attempt {attempt})...')
+            try:
+                send_image(image, enabled)
+                break
+            except ConnectionError as e:
+                if attempt == PRINT_ATTEMPTS:
+                    raise
+                set_state('connecting', f'{e}; reconnecting...')
+                do_connect()
+                if state['phase'] != 'connected':
+                    raise ConnectionError('could not reconnect to the printer')
         sleep(2)
         set_state('connected', 'Sent to printer.' if enabled else 'Dry run finished (nothing was printed).')
     except Exception as e:
         set_state('connected', f'Print failed: {type(e).__name__}: {e}')
     finally:
-        instax.disable_printing()
+        if instax:
+            instax.disable_printing()
 
 
 @app.get('/')
