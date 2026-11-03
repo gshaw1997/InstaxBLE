@@ -61,6 +61,7 @@ class InstaxBLE:
         self.imageSize = (PrinterSettings['mini']['width'], PrinterSettings['mini']['height']) if self.dummyPrinter else (0, 0)
         self.waitingForResponse = False
         self.cancelled = False
+        self.printConfirmed = False  # set when the printer acknowledges the print command
 
         adapters = simplepyble.Adapter.get_adapters()
         if len(adapters) == 0:
@@ -152,7 +153,7 @@ class InstaxBLE:
 
         elif event == EventType.PRINT_IMAGE:
             self.log('received print confirmation')
-            pass
+            self.printConfirmed = True
 
         else:
             self.log(f'Uncaught response from printer. Eventype: {event}')
@@ -366,6 +367,7 @@ class InstaxBLE:
         the bytearray to print directly
         """
         self.log(f'printing image "{imgSrc}"')
+        self.printConfirmed = False
         if self.photosLeft == 0 and not self.dummyPrinter:
             self.log("Can't print: no photos left")
             return

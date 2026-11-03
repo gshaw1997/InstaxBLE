@@ -187,8 +187,15 @@ def send_image(image, enabled):
     instax.print_image(image)
     waited = 0
     while instax.packetsForPrinting and not options['dummy']:  # a dummy printer never drains the queue
+        if enabled and instax.printConfirmed:
+            instax.packetsForPrinting = []  # the printer accepted the print; anything still queued is not needed
+            break
         if not link_is_up():
+            # the print command is the 2nd to last packet: once it has gone out, resending could print twice
+            print_sent = len(instax.packetsForPrinting) < 2
             instax.packetsForPrinting = []
+            if enabled and print_sent:
+                raise RuntimeError('lost connection right after the print command; check the printer before retrying')
             raise ConnectionError('lost connection to the printer while sending')
         if waited >= SEND_TIMEOUT_SECONDS:
             instax.packetsForPrinting = []
